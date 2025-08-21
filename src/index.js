@@ -196,7 +196,7 @@ async function handleRoles(interaction) {
     sorciere: "1 potion de vie + 1 potion de mort, chacune 1x par partie.",
     chasseur: "S’il meurt, il tire sur un joueur de son choix (immédiat).",
     cupidon: "Désigne deux amoureux en début de partie. Si l’un meurt, l’autre meurt de chagrin.",
-    petite_fille: "Espionne le salon des Loups (messages relayés sans pseudo). 20% d’être repérée.",
+    petite_fille: "La nuit, elle reçoit en DM une copie des messages écrits par les Loups (texte sans pseudo). 20% de chance d’être démasquée au lever du jour : dans ce cas, les Loups apprennent son identité (@Pseudo) et elle perd définitivement son pouvoir.",
     ancien: "Résiste à une 1ère attaque des Loups. Si le village le tue, les pouvoirs spéciaux sautent (selon variantes).",
     bouc: "Servira de bouc émissaire en cas d’égalité (variante).",
     idiot: "Si voté par le village, survit mais perd son droit de vote.",
