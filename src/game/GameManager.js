@@ -1,4 +1,4 @@
-import { ChannelType, PermissionsBitField } from "discord.js";
+import { ChannelType, PermissionsBitField, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from "discord.js";
 import { ROLE_CATALOG, ALIGN, isWolf } from "./roles.js";
 import { VIEW_WRITE } from "../util/perms.js";
 import { shuffleArray, sleep, pickRandom } from "./utils.js";
@@ -62,6 +62,11 @@ export class GameManager {
     this.infectUsed = false;
     this.salvateurLast = null;
     this.captainId = null;
+    // --- Petite-Fille: états nuit par nuit ---
+    this.pfRevealed = false;        // si vrai, elle a perdu son pouvoir définitivement
+    this.pfSpyActive = false;       // choix "espionner cette nuit ?"
+    this.pfSpiedThisNight = false;  // au moins un message relayé cette nuit
+    this._wolvesRelayListener = null; // listener messageCreate pour le relais
   }
 
   // ---------- helpers ----------
@@ -120,17 +125,6 @@ export class GameManager {
     if (this.state !== "lobby") return { ok: false, msg: "⛔ Déjà démarré." };
     if (total < 4) return { ok: false, msg: "❌ Minimum 4 joueurs." };
 
-    // Voyante exclusive
-    const mode = options?.seerMode ?? this.config.options.seerMode ?? "classic";
-    if (mode === "none") {
-      counts.voyante = 0;
-      counts.voyante_bavarde = 0;
-    } else if (mode === "classic") {
-      counts.voyante_bavarde = 0;
-    } else if (mode === "chatty") {
-      counts.voyante = 0;
-    }
-
     // Voleur désactivé (au cas où)
     if (counts.voleur) delete counts.voleur;
 
@@ -188,7 +182,7 @@ export class GameManager {
 
     // Création des salons (loups / morts)
     await this.setupChannels();
-
+    
     // Nuit/Jour jusqu’à condition de victoire
     // (MVP: boucle simple, sans tous les pouvoirs avancés)
     this.nightIndex = 1;
@@ -242,6 +236,9 @@ export class GameManager {
       });
 
       await this.channels.wolves.send("🌙 **Salon des Loups** — discutez et votez chaque nuit.");
+      // on ne relaye QUE si la PF a dit "oui" cette nuit, voir nightPhase()
+      this.disablePFRelay(); // s’assure qu’aucun vieux listener ne traîne
+
     }
 
     // Morts
@@ -257,10 +254,113 @@ export class GameManager {
     });
     await this.channels.dead.send("💀 **Salon des Morts** — vous pourrez parler ici après votre décès.");
   }
+getPetiteFille() {
+  return this.players.find(p => p.alive && p.roleKey === "petite_fille") || null;
+}
+
+// DM à la PF pour choisir si elle espionne cette nuit
+async promptPFChoice() {
+  const pf = this.getPetiteFille();
+  if (!pf || this.pfRevealed) { this.pfSpyActive = false; return; }
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("pf_yes").setLabel("Espionner (risque 20%)").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("pf_no").setLabel("Ne pas espionner").setStyle(ButtonStyle.Secondary)
+  );
+
+  try {
+    const msg = await pf.user.send({
+      content: "🔎 **Petite-Fille** — Veux-tu espionner le salon des Loups *cette nuit* ?\n⚠️ Il y a **20%** de chance d’être **démasquée** (les Loups découvriront ton identité au lever du jour).",
+      components: [row]
+    });
+
+    const choice = await msg.awaitMessageComponent({
+      componentType: ComponentType.Button,
+      time: 45000 // 45s pour répondre
+    }).catch(() => null);
+
+    if (!choice) {
+      this.pfSpyActive = false;
+      try { await msg.edit({ content: "⏳ Pas de réponse — tu **n’espionnes pas** cette nuit.", components: [] }); } catch {}
+      return;
+    }
+
+    if (choice.customId === "pf_yes") {
+      this.pfSpyActive = true;
+      try { await choice.update({ content: "✅ Tu **espionnes** les Loups cette nuit.", components: [] }); } catch {}
+    } else {
+      this.pfSpyActive = false;
+      try { await choice.update({ content: "❌ Tu **n’espionnes pas** cette nuit.", components: [] }); } catch {}
+    }
+  } catch {
+    // DM off ou impossible
+    this.pfSpyActive = false;
+  }
+}
+
+// Active le relais des messages des Loups → DM PF (contenu sans pseudo)
+enablePFRelayForThisNight() {
+  if (this._wolvesRelayListener || !this.channels.wolves) return;
+  const pf = this.getPetiteFille();
+  if (!pf) return;
+
+  this.pfSpiedThisNight = false;
+
+  this._wolvesRelayListener = async (msg) => {
+    if (!this.pfSpyActive || this.pfRevealed) return;
+    if (msg.channelId !== this.channels.wolves.id) return;
+    if (msg.author?.bot) return;
+    const content = (msg.content || "").trim();
+    if (!content) return;
+    try {
+      await pf.user.send(`[Loups] ${content}`);
+      this.pfSpiedThisNight = true;
+    } catch {}
+  };
+
+  this.client.on("messageCreate", this._wolvesRelayListener);
+}
+
+// Désactive le relais (fin de nuit ou si PF meurt)
+disablePFRelay() {
+  if (this._wolvesRelayListener) {
+    this.client.off("messageCreate", this._wolvesRelayListener);
+    this._wolvesRelayListener = null;
+  }
+  this.pfSpyActive = false;
+}
+
+// Tirage et annonce au lever du jour si elle a espionné
+async maybeRevealPetiteFilleAtDawn() {
+  const pf = this.getPetiteFille();
+  if (!pf || this.pfRevealed) return;
+  if (!this.pfSpiedThisNight) return; // elle n’a rien vu => pas de tirage
+
+  const chance = this.config.options?.petiteFille?.revealChance ?? 0.2;
+  if (Math.random() < chance) {
+    this.pfRevealed = true; // pouvoir perdu définitivement
+    if (this.channels.wolves) {
+      await this.channels.wolves.send(`⚠️ **Cette nuit**, vous avez découvert que la **Petite-Fille** vous espionnait : <@${pf.id}> !`);
+    }
+    try { await pf.user.send("⚠️ Tu as été **démasquée**. Tu ne peux plus espionner les Loups pour le reste de la partie."); } catch {}
+  }
+
+  // reset des flags de nuit
+  this.pfSpiedThisNight = false;
+}
 
   // ---------- phases (MVP) ----------
   async nightPhase() {
     await this.lobby.send(`🌙 **Nuit ${this.nightIndex}**. Tout le monde dort…`);
+
+  // --- Petite-Fille : choix "espionner cette nuit ?" ---
+  await this.promptPFChoice();
+  if (this.pfSpyActive && this.channels.wolves) {
+      this.enablePFRelayForThisNight();
+   } else {
+      this.disablePFRelay();
+   }
+
 
     // Vote des loups (MVP : les loups votent une cible parmi les **non-loups** vivants)
     const wolves = this.alive().filter((p) => isWolf(p.roleKey));
@@ -277,6 +377,10 @@ export class GameManager {
         await this.kill(victim.id, { cause: "loups" });
       }
     }
+    // --- Fin de nuit : tirage démasquage PF (si elle a espionné) ---
+    await this.maybeRevealPetiteFilleAtDawn();
+    // désactive le relais à la fin de la nuit quoi qu’il arrive
+    this.disablePFRelay();
 
     // Fin de nuit : petit résumé
     const recap = this.lastDeathsText();
@@ -313,6 +417,11 @@ export class GameManager {
 
     p.alive = false;
     this.deaths.push({ id, cause, nightIndex: this.nightIndex });
+    // Si la PF meurt, on coupe son relais immédiatement
+    if (p.roleKey === "petite_fille") {
+     this.disablePFRelay();
+    }
+
 
     // Révélation à la mort
     if (this.config.options.reveal === "on_death") {
@@ -426,6 +535,7 @@ export class GameManager {
   }
 
   async stop() {
+    this.disablePFRelay();
     try {
       await this.channels.wolves?.delete("cleanup");
     } catch {}
