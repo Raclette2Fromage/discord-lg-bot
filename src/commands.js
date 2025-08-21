@@ -1,4 +1,4 @@
-import { REST, Routes, SlashCommandBuilder } from "discord.js";
+import { REST, Routes, SlashCommandBuilder } from "discord.js"; 
 import configJson from "../config.json" assert { type: "json" };
 
 function buildLGCommand() {
@@ -32,7 +32,7 @@ function buildLGCommand() {
       ));
       s.addBooleanOption(o => o.setName("cupidon_self").setDescription("Cupidon peut être dans le couple"));
       s.addBooleanOption(o => o.setName("cupidon_random").setDescription("Couple aléatoire"));
-      // Nouvelle option compacte pour les rôles :
+      // Option compacte pour la compo des rôles
       s.addStringOption(o => o
         .setName("roles")
         .setDescription("Ex: loup=2 sorciere=1 petite_fille=1 cupidon=1 salvateur=1")
@@ -44,7 +44,8 @@ function buildLGCommand() {
     .addSubcommand(s => s.setName("start").setDescription("Démarrer la partie"))
     .addSubcommand(s => s.setName("table").setDescription("Voir l'ordre de table"))
     .addSubcommand(s => s.setName("stop").setDescription("Arrêter/nettoyer"))
-    .addSubcommand(s => s.setName("help").setDescription("Afficher l’aide et les commandes"));
+    .addSubcommand(s => s.setName("help").setDescription("Afficher l’aide et les commandes"))
+    .addSubcommand(s => s.setName("roles").setDescription("Lister tous les rôles et leurs pouvoirs")); // ← AJOUTÉ
 
   return lg;
 }
