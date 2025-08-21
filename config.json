@@ -1,0 +1,26 @@
+{
+  "token": "",
+  "clientId": "TON_APPLICATION_ID",
+  "guildId": "TON_GUILD_ID",
+  "categoryName": "loup-garou",
+  "channels": {
+    "lobbyPrefix": "lg-lobby-",
+    "wolvesPrefix": "lg-loups-",
+    "deadPrefix": "lg-morts-"
+  },
+  "timers": {
+    "joinSeconds": 120,
+    "nightSeconds": 90,
+    "daySeconds": 180,
+    "voteSeconds": 60,
+    "choiceSeconds": 45
+  },
+  "options": {
+    "seerMode": "classic",
+    "reveal": "on_death",
+    "compositionVisible": true,
+    "cupidon": { "allowSelf": true, "randomCouple": false },
+    "petiteFille": { "revealChance": 0.2 },
+    "neighborsMode": "skip-dead"
+  }
+}
