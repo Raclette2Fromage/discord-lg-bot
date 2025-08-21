@@ -96,8 +96,17 @@ async function handleConfig(interaction) {
   const seerMode = interaction.options.getString("voyante");      // classic | chatty | none
   const allowSelf = interaction.options.getBoolean("cupidon_self");
   const randomCouple = interaction.options.getBoolean("cupidon_random");
+  const rolesStr = interaction.options.getString("roles") || "";
 
-  const counts = gm.countsFromInteraction(interaction); // récupère les quantités pour chaque rôle optionnel
+  // Parse "loup=2 sorciere=1 ..." en objet counts
+  const counts = {};
+  for (const chunk of rolesStr.split(/\s+/).filter(Boolean)) {
+    const m = chunk.match(/^([a-zA-Z0-9_]+)\s*=\s*(\d{1,2})$/);
+    if (!m) continue;
+    const key = m[1].toLowerCase();
+    const n = parseInt(m[2], 10);
+    if (Number.isFinite(n) && n >= 0) counts[key] = n;
+  }
 
   const res = gm.setConfig({
     total,
@@ -109,6 +118,7 @@ async function handleConfig(interaction) {
       cupidon: { allowSelf, randomCouple }
     }
   });
+
   return interaction.reply({ content: res.msg, ephemeral: true });
 }
 
