@@ -1,7 +1,7 @@
 {
   "token": "",
-  "clientId": "TON_APPLICATION_ID",
-  "guildId": "TON_GUILD_ID",
+  "clientId": "COLLE_ICI_TON_APPLICATION_ID",
+  "guildId": "COLLE_ICI_TON_SERVER_ID",
   "categoryName": "loup-garou",
   "channels": {
     "lobbyPrefix": "lg-lobby-",
