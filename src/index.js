@@ -1,4 +1,4 @@
-// --- keepalive (utile sur Replit)
+// --- keepalive (utile sur Replit) 
 import express from "express";
 const app = express();
 app.get("/", (req, res) => res.send("LG-bot OK"));
@@ -49,6 +49,7 @@ client.on("interactionCreate", async (interaction) => {
     if (sub === "start")  return handleStart(interaction);
     if (sub === "table")  return handleTable(interaction);
     if (sub === "stop")   return handleStop(interaction);
+    if (sub === "help")   return handleHelp(interaction);  // <— ajouté
   } catch (e) {
     console.error(e);
     if (!interaction.replied) {
@@ -132,6 +133,25 @@ async function handleStop(interaction) {
   if (!gm) return interaction.reply({ content: "❌ Pas un lobby Loup-Garou.", ephemeral: true });
   await gm.stop();
   return interaction.reply({ content: "🛑 Partie nettoyée.", ephemeral: true });
+}
+
+// --- /lg help
+async function handleHelp(interaction) {
+  const txt =
+`🆘 **Commandes Loup-Garou**
+/lg create — Créer un lobby
+/lg join — Rejoindre le lobby (à faire dans le salon du lobby)
+/lg leave — Quitter le lobby
+/lg kick @joueur — Éjecter un joueur avant le lancement
+/lg config — Configurer la partie (joueurs, voyante, reveal, rôles…)
+/lg start — Démarrer la partie (verrouille le lobby)
+/lg table — Afficher l'ordre de table
+/lg stop — Arrêter et nettoyer
+
+**Astuce :**
+- Fais \`/lg config\` (ex: \`joueurs:7 loup:2 voyante:classic sorciere:1 petite_fille:1\`) puis \`/lg start\`.
+- Les rôles sont envoyés **en MP**. Les Loups ont un salon privé.`;
+  return interaction.reply({ content: txt, ephemeral: true });
 }
 
 // --- login
