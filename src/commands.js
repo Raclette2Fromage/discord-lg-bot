@@ -1,9 +1,7 @@
 import { REST, Routes, SlashCommandBuilder } from "discord.js";
 import configJson from "../config.json" assert { type: "json" };
-import { roleKeysForConfig } from "./game/roles.js";
 
 function buildLGCommand() {
-  const roleKeys = roleKeysForConfig();
   const lg = new SlashCommandBuilder()
     .setName("lg")
     .setDescription("Loup-Garou configurable")
@@ -17,7 +15,7 @@ function buildLGCommand() {
         .addUserOption(o => o.setName("user").setDescription("Joueur à éjecter").setRequired(true))
     )
 
-    // Config
+    // Config (<= 25 options)
     .addSubcommand(s => {
       s.setName("config").setDescription("Configurer la partie");
       s.addIntegerOption(o => o.setName("joueurs").setDescription("Nombre total de joueurs").setRequired(true));
@@ -34,9 +32,11 @@ function buildLGCommand() {
       ));
       s.addBooleanOption(o => o.setName("cupidon_self").setDescription("Cupidon peut être dans le couple"));
       s.addBooleanOption(o => o.setName("cupidon_random").setDescription("Couple aléatoire"));
-      for (const k of roleKeys) {
-        s.addIntegerOption(o => o.setName(k).setDescription(`# ${k} (optionnel)`).setMinValue(0));
-      }
+      // Nouvelle option compacte pour les rôles :
+      s.addStringOption(o => o
+        .setName("roles")
+        .setDescription("Ex: loup=2 sorciere=1 petite_fille=1 cupidon=1 salvateur=1")
+      );
       return s;
     })
 
@@ -49,7 +49,7 @@ function buildLGCommand() {
   return lg;
 }
 
-// 1) Export pour l’appel depuis index.js
+// Export pour index.js
 export async function registerGuildCommands(client) {
   const rest = new REST({ version: "10" }).setToken(process.env.TOKEN || configJson.token);
   const body = [buildLGCommand().toJSON()];
@@ -57,10 +57,10 @@ export async function registerGuildCommands(client) {
     Routes.applicationGuildCommands(configJson.clientId, configJson.guildId),
     { body }
   );
-  console.log("✅ Guild slash commands enregistrées (via client).");
+  console.log("✅ Guild slash commands enregistrées.");
 }
 
-// 2) Auto-exécution si lancé via `npm run register`
+// Auto-exécution pour `npm run register`
 if (process.argv[1]?.endsWith("commands.js")) {
   (async () => {
     try {
