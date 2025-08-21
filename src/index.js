@@ -177,7 +177,7 @@ async function handleHelp(interaction) {
 /lg stop — Arrêter et nettoyer
 /lg roles — Liste des rôles et pouvoirs
 
-**Exemples :**
+**Astuce :**
 /lg config joueurs:10 roles:"loup=3 simple_villageois=4 voyante=1 sorciere=1 petite_fille=1"
 - Rôles uniques (max 1): voyante, voyante_bavarde, sorciere, salvateur, petite_fille, cupidon, ancien, bouc, idiot, chasseur, capitaine, detective, montreur_ours, chien_loup, enfant_sauvage, infect_pere
 - Multiples autorisés: loup, simple_villageois (villageois), deux_soeurs, trois_freres
