@@ -62,11 +62,16 @@ export class GameManager {
     this.infectUsed = false;
     this.salvateurLast = null;
     this.captainId = null;
+
     // --- Petite-Fille: états nuit par nuit ---
     this.pfRevealed = false;        // si vrai, elle a perdu son pouvoir définitivement
     this.pfSpyActive = false;       // choix "espionner cette nuit ?"
     this.pfSpiedThisNight = false;  // au moins un message relayé cette nuit
     this._wolvesRelayListener = null; // listener messageCreate pour le relais
+
+    // --- Cupidon / Couple ---
+    this.cupidonId = null;          // id du Cupidon (s’il existe)
+    this.coupleIds = [];            // [idA, idB] si un couple est formé
   }
 
   // ---------- helpers ----------
@@ -77,6 +82,10 @@ export class GameManager {
 
   alive() {
     return this.players.filter((p) => p.alive);
+  }
+
+  getPlayer(id) {
+    return this.players.find(p => p.id === id) || null;
   }
 
   // ---------- lobby ----------
@@ -124,6 +133,19 @@ export class GameManager {
   setConfig({ total, counts, options }) {
     if (this.state !== "lobby") return { ok: false, msg: "⛔ Déjà démarré." };
     if (total < 4) return { ok: false, msg: "❌ Minimum 4 joueurs." };
+
+    // (optionnel/legacy) Voyante mode — si tu veux 100% "rôles", supprime ce bloc.
+    const mode = options?.seerMode ?? this.config.options.seerMode;
+    if (mode) {
+      if (mode === "none") {
+        counts.voyante = 0;
+        counts.voyante_bavarde = 0;
+      } else if (mode === "classic") {
+        counts.voyante_bavarde = 0;
+      } else if (mode === "chatty") {
+        counts.voyante = 0;
+      }
+    }
 
     // Voleur désactivé (au cas où)
     if (counts.voleur) delete counts.voleur;
@@ -180,11 +202,15 @@ export class GameManager {
       } catch {}
     }
 
+    // Mémoriser Cupidon et setup couple si besoin
+    const cup = this.players.find(p => p.roleKey === "cupidon");
+    this.cupidonId = cup?.id || null;
+    await this.setupCoupleIfAny();
+
     // Création des salons (loups / morts)
     await this.setupChannels();
-    
+
     // Nuit/Jour jusqu’à condition de victoire
-    // (MVP: boucle simple, sans tous les pouvoirs avancés)
     this.nightIndex = 1;
     while (true) {
       await this.nightPhase();
@@ -217,6 +243,75 @@ export class GameManager {
     return roles;
   }
 
+  // ---------- Cupidon / Couple ----------
+  async setupCoupleIfAny() {
+    // Pas de Cupidon ? pas de couple
+    if (!this.cupidonId) return;
+
+    const opt = this.config.options?.cupidon || {};
+    const allowSelf = !!opt.allowSelf;
+    const randomCouple = !!opt.randomCouple;
+
+    if (!randomCouple) {
+      // (MVP) Pas de sélection manuelle encore — on ne crée le couple que si randomCouple=true
+      return;
+    }
+
+    // Choisir 2 joueurs pour le couple
+    const pool = this.players.filter(p => p.alive);
+    let candidates = pool;
+
+    if (!allowSelf) {
+      candidates = pool.filter(p => p.id !== this.cupidonId);
+    }
+
+    if (candidates.length < 2) return;
+
+    // tirer deux distincts
+    shuffleArray(candidates);
+    const a = candidates[0];
+    let b = candidates.find(x => x.id !== a.id);
+    if (!b) return;
+
+    // Former le couple
+    a.loverId = b.id;
+    b.loverId = a.id;
+    this.coupleIds = [a.id, b.id];
+
+    // DM amoureux
+    try { await a.user.send(`❤️ Tu es **Amoureux** avec **${this.nameOf(b.id)}**. Si l'un meurt, l'autre meurt de chagrin.`); } catch {}
+    try { await b.user.send(`❤️ Tu es **Amoureux** avec **${this.nameOf(a.id)}**. Si l'un meurt, l'autre meurt de chagrin.`); } catch {}
+
+    // DM Cupidon (il connaît l’identité du couple)
+    const cupidon = this.cupidonId ? this.getPlayer(this.cupidonId) : null;
+    if (cupidon) {
+      try {
+        await cupidon.user.send(`💘 **Couple formé** : ${this.nameOf(a.id)} ❤️ ${this.nameOf(b.id)}${(a.id===cupidon.id||b.id===cupidon.id) ? " (tu en fais partie)" : ""}.`);
+      } catch {}
+    }
+
+    // Option : annoncer en lobby que "Cupidon a décoché ses flèches" (sans donner les noms)
+    await this.lobby.send("💘 Cupidon a décoché ses flèches… deux cœurs sont liés cette nuit.");
+  }
+
+  isCoupleAlive() {
+    if (!this.coupleIds?.length) return false;
+    const [a, b] = this.coupleIds;
+    const pa = this.getPlayer(a), pb = this.getPlayer(b);
+    return !!(pa && pb && pa.alive && pb.alive);
+  }
+
+  isCoupleMixed() {
+    if (!this.coupleIds?.length) return false;
+    const [a, b] = this.coupleIds;
+    const pa = this.getPlayer(a), pb = this.getPlayer(b);
+    if (!pa || !pb) return false;
+    const aa = ROLE_CATALOG[pa.roleKey]?.align;
+    const ab = ROLE_CATALOG[pb.roleKey]?.align;
+    if (!aa || !ab) return false;
+    return (aa !== ab); // village vs loup (ou autre)
+  }
+
   // ---------- salons ----------
   async setupChannels() {
     // Loups
@@ -236,9 +331,8 @@ export class GameManager {
       });
 
       await this.channels.wolves.send("🌙 **Salon des Loups** — discutez et votez chaque nuit.");
-      // on ne relaye QUE si la PF a dit "oui" cette nuit, voir nightPhase()
-      this.disablePFRelay(); // s’assure qu’aucun vieux listener ne traîne
-
+      // PF : repartir propre
+      this.disablePFRelay();
     }
 
     // Morts
@@ -254,115 +348,112 @@ export class GameManager {
     });
     await this.channels.dead.send("💀 **Salon des Morts** — vous pourrez parler ici après votre décès.");
   }
-getPetiteFille() {
-  return this.players.find(p => p.alive && p.roleKey === "petite_fille") || null;
-}
 
-// DM à la PF pour choisir si elle espionne cette nuit
-async promptPFChoice() {
-  const pf = this.getPetiteFille();
-  if (!pf || this.pfRevealed) { this.pfSpyActive = false; return; }
+  // ---------- Petite-Fille : helpers ----------
+  getPetiteFille() {
+    return this.players.find(p => p.alive && p.roleKey === "petite_fille") || null;
+  }
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("pf_yes").setLabel("Espionner (risque 20%)").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("pf_no").setLabel("Ne pas espionner").setStyle(ButtonStyle.Secondary)
-  );
+  async promptPFChoice() {
+    const pf = this.getPetiteFille();
+    if (!pf || this.pfRevealed) { this.pfSpyActive = false; return; }
 
-  try {
-    const msg = await pf.user.send({
-      content: "🔎 **Petite-Fille** — Veux-tu espionner le salon des Loups *cette nuit* ?\n⚠️ Il y a **20%** de chance d’être **démasquée** (les Loups découvriront ton identité au lever du jour).",
-      components: [row]
-    });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("pf_yes").setLabel("Espionner (risque 20%)").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("pf_no").setLabel("Ne pas espionner").setStyle(ButtonStyle.Secondary)
+    );
 
-    const choice = await msg.awaitMessageComponent({
-      componentType: ComponentType.Button,
-      time: 45000 // 45s pour répondre
-    }).catch(() => null);
+    try {
+      const msg = await pf.user.send({
+        content: "🔎 **Petite-Fille** — Veux-tu espionner le salon des Loups *cette nuit* ?\n⚠️ Il y a **20%** de chance d’être **démasquée** (les Loups découvriront ton identité au lever du jour).",
+        components: [row]
+      });
 
-    if (!choice) {
+      const choice = await msg.awaitMessageComponent({
+        componentType: ComponentType.Button,
+        time: 45000 // 45s pour répondre
+      }).catch(() => null);
+
+      if (!choice) {
+        this.pfSpyActive = false;
+        try { await msg.edit({ content: "⏳ Pas de réponse — tu **n’espionnes pas** cette nuit.", components: [] }); } catch {}
+        return;
+      }
+
+      if (choice.customId === "pf_yes") {
+        this.pfSpyActive = true;
+        try { await choice.update({ content: "✅ Tu **espionnes** les Loups cette nuit.", components: [] }); } catch {}
+      } else {
+        this.pfSpyActive = false;
+        try { await choice.update({ content: "❌ Tu **n’espionnes pas** cette nuit.", components: [] }); } catch {}
+      }
+    } catch {
+      // DM off ou impossible
       this.pfSpyActive = false;
-      try { await msg.edit({ content: "⏳ Pas de réponse — tu **n’espionnes pas** cette nuit.", components: [] }); } catch {}
-      return;
     }
+  }
 
-    if (choice.customId === "pf_yes") {
-      this.pfSpyActive = true;
-      try { await choice.update({ content: "✅ Tu **espionnes** les Loups cette nuit.", components: [] }); } catch {}
-    } else {
-      this.pfSpyActive = false;
-      try { await choice.update({ content: "❌ Tu **n’espionnes pas** cette nuit.", components: [] }); } catch {}
+  enablePFRelayForThisNight() {
+    if (this._wolvesRelayListener || !this.channels.wolves) return;
+    const pf = this.getPetiteFille();
+    if (!pf) return;
+
+    this.pfSpiedThisNight = false;
+
+    this._wolvesRelayListener = async (msg) => {
+      if (!this.pfSpyActive || this.pfRevealed) return;
+      if (msg.channelId !== this.channels.wolves.id) return;
+      if (msg.author?.bot) return;
+      const content = (msg.content || "").trim();
+      if (!content) return;
+      try {
+        await pf.user.send(`[Loups] ${content}`); // sans pseudo
+        this.pfSpiedThisNight = true;
+      } catch {}
+    };
+
+    this.client.on("messageCreate", this._wolvesRelayListener);
+  }
+
+  disablePFRelay() {
+    if (this._wolvesRelayListener) {
+      this.client.off("messageCreate", this._wolvesRelayListener);
+      this._wolvesRelayListener = null;
     }
-  } catch {
-    // DM off ou impossible
     this.pfSpyActive = false;
   }
-}
 
-// Active le relais des messages des Loups → DM PF (contenu sans pseudo)
-enablePFRelayForThisNight() {
-  if (this._wolvesRelayListener || !this.channels.wolves) return;
-  const pf = this.getPetiteFille();
-  if (!pf) return;
+  async maybeRevealPetiteFilleAtDawn() {
+    const pf = this.getPetiteFille();
+    if (!pf || this.pfRevealed) return;
+    if (!this.pfSpiedThisNight) return; // pas d’espionnage → pas de tirage
 
-  this.pfSpiedThisNight = false;
-
-  this._wolvesRelayListener = async (msg) => {
-    if (!this.pfSpyActive || this.pfRevealed) return;
-    if (msg.channelId !== this.channels.wolves.id) return;
-    if (msg.author?.bot) return;
-    const content = (msg.content || "").trim();
-    if (!content) return;
-    try {
-      await pf.user.send(`[Loups] ${content}`);
-      this.pfSpiedThisNight = true;
-    } catch {}
-  };
-
-  this.client.on("messageCreate", this._wolvesRelayListener);
-}
-
-// Désactive le relais (fin de nuit ou si PF meurt)
-disablePFRelay() {
-  if (this._wolvesRelayListener) {
-    this.client.off("messageCreate", this._wolvesRelayListener);
-    this._wolvesRelayListener = null;
-  }
-  this.pfSpyActive = false;
-}
-
-// Tirage et annonce au lever du jour si elle a espionné
-async maybeRevealPetiteFilleAtDawn() {
-  const pf = this.getPetiteFille();
-  if (!pf || this.pfRevealed) return;
-  if (!this.pfSpiedThisNight) return; // elle n’a rien vu => pas de tirage
-
-  const chance = this.config.options?.petiteFille?.revealChance ?? 0.2;
-  if (Math.random() < chance) {
-    this.pfRevealed = true; // pouvoir perdu définitivement
-    if (this.channels.wolves) {
-      await this.channels.wolves.send(`⚠️ **Cette nuit**, vous avez découvert que la **Petite-Fille** vous espionnait : <@${pf.id}> !`);
+    const chance = this.config.options?.petiteFille?.revealChance ?? 0.2;
+    if (Math.random() < chance) {
+      this.pfRevealed = true; // pouvoir perdu définitivement
+      if (this.channels.wolves) {
+        await this.channels.wolves.send(`⚠️ **Cette nuit**, vous avez découvert que la **Petite-Fille** vous espionnait : <@${pf.id}> !`);
+      }
+      try { await pf.user.send("⚠️ Tu as été **démasquée**. Tu ne peux plus espionner les Loups pour le reste de la partie."); } catch {}
     }
-    try { await pf.user.send("⚠️ Tu as été **démasquée**. Tu ne peux plus espionner les Loups pour le reste de la partie."); } catch {}
-  }
 
-  // reset des flags de nuit
-  this.pfSpiedThisNight = false;
-}
+    // reset des flags de nuit
+    this.pfSpiedThisNight = false;
+  }
 
   // ---------- phases (MVP) ----------
   async nightPhase() {
     await this.lobby.send(`🌙 **Nuit ${this.nightIndex}**. Tout le monde dort…`);
 
-  // --- Petite-Fille : choix "espionner cette nuit ?" ---
-  await this.promptPFChoice();
-  if (this.pfSpyActive && this.channels.wolves) {
+    // --- Petite-Fille : choix "espionner cette nuit ?" ---
+    await this.promptPFChoice();
+    if (this.pfSpyActive && this.channels.wolves) {
       this.enablePFRelayForThisNight();
-   } else {
+    } else {
       this.disablePFRelay();
-   }
+    }
 
-
-    // Vote des loups (MVP : les loups votent une cible parmi les **non-loups** vivants)
+    // Vote des loups (MVP)
     const wolves = this.alive().filter((p) => isWolf(p.roleKey));
     const candidates = this.alive().filter((p) => !isWolf(p.roleKey));
     if (wolves.length && candidates.length && this.channels.wolves) {
@@ -377,6 +468,7 @@ async maybeRevealPetiteFilleAtDawn() {
         await this.kill(victim.id, { cause: "loups" });
       }
     }
+
     // --- Fin de nuit : tirage démasquage PF (si elle a espionné) ---
     await this.maybeRevealPetiteFilleAtDawn();
     // désactive le relais à la fin de la nuit quoi qu’il arrive
@@ -404,24 +496,22 @@ async maybeRevealPetiteFilleAtDawn() {
     });
 
     if (victim) {
-      // capacité "Idiot" non gérée ici (MVP)
       await this.kill(victim.id, { cause: "village" });
     }
   }
 
   // ---------- événements de mort ----------
-  // tue un joueur et annonce selon les options
   async kill(id, { cause } = {}) {
     const p = this.players.find((x) => x.id === id);
     if (!p || !p.alive) return;
 
     p.alive = false;
     this.deaths.push({ id, cause, nightIndex: this.nightIndex });
+
     // Si la PF meurt, on coupe son relais immédiatement
     if (p.roleKey === "petite_fille") {
-     this.disablePFRelay();
+      this.disablePFRelay();
     }
-
 
     // Révélation à la mort
     if (this.config.options.reveal === "on_death") {
@@ -443,9 +533,13 @@ async maybeRevealPetiteFilleAtDawn() {
         await this.kill(lover.id, { cause: "chagrin" });
       }
     }
+
+    // Déclenchement Chasseur (choix 45s)
+    if (p.roleKey === "chasseur") {
+      await this.resolveChasseur(p);
+    }
   }
 
-  // texte “cause de mort”
   causeText(c) {
     const map = {
       loups: "Loups",
@@ -458,23 +552,39 @@ async maybeRevealPetiteFilleAtDawn() {
     return map[c] || c;
   }
 
-  // récap des morts de la nuit (affiché le matin)
   lastDeathsText() {
     if (this.deaths.length === 0) return "";
-    // MVP : on affiche les 1–2 derniers décès
     const last = this.deaths.slice(-2).map((d) => this.nameOf(d.id)).join(", ");
     return `Morts cette nuit: **${last}**`;
   }
 
-  // capacité Chasseur (MVP aléatoire)
+  // capacité Chasseur (choix manuel avec 45s)
   async resolveChasseur(ch) {
+    if (!ch || !ch.alive === false) {
+      // il vient de mourir, c’est bon
+    }
     const targets = this.alive().filter((x) => x.id !== ch.id);
     if (targets.length === 0) return;
-    const t = pickRandom(targets);
-    await this.kill(t.id, { cause: "chasseur" });
+
+    try {
+      await ch.user.send("💥 Tu es mort... mais en tant que **Chasseur**, tu peux tirer une dernière balle. Choisis ta cible (45s).");
+    } catch {}
+
+    const victim = await startVote({
+      channel: this.lobby, // simple : on fait voter uniquement le chasseur dans le lobby
+      title: `🎯 Tir du **Chasseur** (${this.nameOf(ch.id)}) — choisis une cible`,
+      voters: [ch],
+      candidates: targets,
+      durationMs: 45000,
+    });
+
+    if (victim) {
+      await this.kill(victim.id, { cause: "chasseur" });
+    } else {
+      await this.lobby.send("💥 Le **Chasseur** a raté sa cible (aucun choix).");
+    }
   }
 
-  // salon des morts : jour muet, nuit parlant (shaman parle toujours)
   async toggleDeadTalk(day) {
     if (!this.channels.dead) return;
     const overwrites = [
@@ -500,10 +610,19 @@ async maybeRevealPetiteFilleAtDawn() {
   winCheck() {
     const alive = this.alive();
     const wolves = alive.filter((p) => isWolf(p.roleKey)).length;
-    const vill = alive.length - wolves; // on ignore les neutres pour ce MVP
+    const vill = alive.length - wolves;
 
+    // 1) Victoire couple mixte (prioritaire) : les deux amoureux sont les deux seuls vivants
+    if (this.isCoupleAlive() && alive.length === 2) {
+      if (this.isCoupleMixed()) {
+        return { done: true, winner: "couple" }; // couple + Cupidon gagnent
+      }
+    }
+
+    // 2) Conditions classiques
     if (wolves === 0) return { done: true, winner: ALIGN.VILLAGE };
     if (wolves >= vill) return { done: true, winner: ALIGN.WOLF };
+
     return { done: false };
   }
 
@@ -528,26 +647,26 @@ async maybeRevealPetiteFilleAtDawn() {
       )
       .join("\n");
 
+    let winnerText = "";
+    if (winner === "couple") {
+      const [a, b] = this.coupleIds;
+      winnerText = `**Couple** (❤️) — ${this.nameOf(a)} + ${this.nameOf(b)}\n💘 Cupidon gagne également s’il était en jeu.`;
+    } else {
+      winnerText = `**${winner === ALIGN.WOLF ? "Loups" : "Village"}**`;
+    }
+
     await this.lobby.send(
-      `🏁 **Fin de partie** — Vainqueur: **${winner === ALIGN.WOLF ? "Loups" : "Village"}**\n\n${lines}`
+      `🏁 **Fin de partie** — Vainqueur: ${winnerText}\n\n${lines}`
     );
     await this.stop();
   }
 
   async stop() {
     this.disablePFRelay();
-    try {
-      await this.channels.wolves?.delete("cleanup");
-    } catch {}
-    try {
-      await this.channels.dead?.delete("cleanup");
-    } catch {}
-    try {
-      await this.channels.sisters?.delete("cleanup");
-    } catch {}
-    try {
-      await this.channels.brothers?.delete("cleanup");
-    } catch {}
+    try { await this.channels.wolves?.delete("cleanup"); } catch {}
+    try { await this.channels.dead?.delete("cleanup"); } catch {}
+    try { await this.channels.sisters?.delete("cleanup"); } catch {}
+    try { await this.channels.brothers?.delete("cleanup"); } catch {}
     this.state = "ended";
   }
 }
