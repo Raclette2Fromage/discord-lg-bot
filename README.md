@@ -38,10 +38,7 @@ Il gère automatiquement la création du lobby, la distribution des rôles en MP
   - `roles` → définir la composition (ex: `loup=2 sorciere=1 voyante=1 petite_fille=1`).
   - `reveal` → `on_death`, `end`, ou `never`.
   - `composition_visible` → `true` ou `false`.
-  - Options spéciales : Cupidon (self/random), etc.
-
-👉 **Remarque** : la Voyante et la Voyante bavarde sont des rôles distincts.  
-Dans la config, tu choisis juste combien de `voyante` **ou** de `voyante_bavarde` tu veux mettre (ou aucun).
+  - Options spéciales : Cupidon (self/random)
 
 ---
 
